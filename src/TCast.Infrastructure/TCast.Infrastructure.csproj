@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 网络与文件实现：无 UI 依赖；Kestrel 通过框架引用引入。 -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>TCast.Infrastructure</RootNamespace>
+    <AssemblyName>TCast.Infrastructure</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TCast.Protocol\TCast.Protocol.csproj" />
+  </ItemGroup>
+
+  <!-- Kestrel / DI / Logging 由框架引用提供，不再单独引用 Microsoft.Extensions.Hosting。 -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="TCast.Infrastructure.Tests" />
+  </ItemGroup>
+
+</Project>

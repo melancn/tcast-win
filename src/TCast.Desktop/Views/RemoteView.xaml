@@ -1,0 +1,91 @@
+<UserControl x:Class="TCast.Desktop.Views.RemoteView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:TCast.Desktop.Controls"
+             xmlns:cmd="clr-namespace:TCast.Protocol.Commands;assembly=TCast.Protocol"
+             xmlns:converters="clr-namespace:TCast.Desktop.Converters">
+  <UserControl.Resources>
+    <converters:InverseBooleanToVisibilityConverter x:Key="NotReady" />
+  </UserControl.Resources>
+  <StackPanel>
+    <Border Background="{StaticResource App.PrimarySoft}" CornerRadius="8" Padding="16,10" Margin="0,0,0,20"
+            Visibility="{Binding IsReady, Converter={StaticResource NotReady}}">
+      <DockPanel>
+        <Button DockPanel.Dock="Right" Content="前往设备发现" Style="{StaticResource App.SecondaryButton}" Margin="12,0,0,0"
+                Command="{Binding DataContext.NavigateCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="discovery" />
+        <TextBlock Text="尚未连接电视，请先完成握手后开始遥控。" Style="{StaticResource App.MutedText}" VerticalAlignment="Center" />
+      </DockPanel>
+    </Border>
+    <ItemsControl>
+      <ItemsControl.ItemsPanel><ItemsPanelTemplate><controls:MasonryPanel MinCardWidth="380" Gap="20" MaxColumns="3" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+      <ContentControl Style="{StaticResource App.Card}">
+        <StackPanel>
+          <DockPanel>
+            <Button DockPanel.Dock="Right" Style="{StaticResource App.SecondaryButton}" Foreground="{StaticResource App.Danger}"
+                    Command="{Binding SendKeyCommand}" CommandParameter="{x:Static cmd:TcastKey.Power}" AutomationProperties.Name="电源（需二次确认）">
+              <StackPanel Orientation="Horizontal"><Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Power}" Width="15" Height="15" Margin="0,0,8,0" /><TextBlock Text="电源" Foreground="{StaticResource App.Danger}" /></StackPanel>
+            </Button>
+            <StackPanel><TextBlock Text="电视遥控器" Style="{StaticResource App.CardTitle}" Margin="0,0,0,6" /><TextBlock Text="基础按键 · TCast 协议" Style="{StaticResource App.MutedText}" /></StackPanel>
+          </DockPanel>
+          <Grid Width="264" Height="264" Margin="0,32,0,24" HorizontalAlignment="Center">
+            <Ellipse Stroke="#E1E9FA" StrokeThickness="1">
+              <Ellipse.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="1,1"><GradientStop Color="#F9FBFF" Offset="0" /><GradientStop Color="#EFF3FC" Offset="1" /></LinearGradientBrush></Ellipse.Fill>
+            </Ellipse>
+            <Ellipse Width="100" Height="100" Stroke="#E1E9FA" Fill="#F6F9FF" />
+            <Button Style="{StaticResource App.DirectionKey}" VerticalAlignment="Top" Margin="0,20,0,0" Command="{Binding SendKeyCommand}" CommandParameter="{x:Static cmd:TcastKey.Up}" AutomationProperties.Name="方向上" PreviewMouseLeftButtonDown="OnRepeatMouseDown" PreviewMouseLeftButtonUp="OnRepeatMouseUp" MouseLeave="OnRepeatMouseLeave"><Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Up}" Width="14" Height="9" /></Button>
+            <Button Style="{StaticResource App.DirectionKey}" VerticalAlignment="Bottom" Margin="0,0,0,20" Command="{Binding SendKeyCommand}" CommandParameter="{x:Static cmd:TcastKey.Down}" AutomationProperties.Name="方向下" PreviewMouseLeftButtonDown="OnRepeatMouseDown" PreviewMouseLeftButtonUp="OnRepeatMouseUp" MouseLeave="OnRepeatMouseLeave"><Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Down}" Width="14" Height="9" /></Button>
+            <Button Style="{StaticResource App.DirectionKey}" HorizontalAlignment="Left" Margin="20,0,0,0" Command="{Binding SendKeyCommand}" CommandParameter="{x:Static cmd:TcastKey.Left}" AutomationProperties.Name="方向左" PreviewMouseLeftButtonDown="OnRepeatMouseDown" PreviewMouseLeftButtonUp="OnRepeatMouseUp" MouseLeave="OnRepeatMouseLeave"><Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Left}" Width="9" Height="14" /></Button>
+            <Button Style="{StaticResource App.DirectionKey}" HorizontalAlignment="Right" Margin="0,0,20,0" Command="{Binding SendKeyCommand}" CommandParameter="{x:Static cmd:TcastKey.Right}" AutomationProperties.Name="方向右" PreviewMouseLeftButtonDown="OnRepeatMouseDown" PreviewMouseLeftButtonUp="OnRepeatMouseUp" MouseLeave="OnRepeatMouseLeave"><Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Right}" Width="9" Height="14" /></Button>
+            <Button Width="80" Height="80" Background="{StaticResource App.Primary}" Foreground="White" Content="OK" FontSize="18" FontWeight="SemiBold"
+                    Command="{Binding SendKeyCommand}" CommandParameter="{x:Static cmd:TcastKey.Ok}" AutomationProperties.Name="确认">
+              <Button.Template><ControlTemplate TargetType="Button">
+                <Grid x:Name="CenterKey"><Ellipse Fill="{TemplateBinding Background}" Stroke="White" StrokeThickness="5" /><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" /></Grid>
+                <ControlTemplate.Triggers>
+                  <Trigger Property="IsEnabled" Value="False"><Setter TargetName="CenterKey" Property="Opacity" Value="0.45" /></Trigger>
+                  <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{StaticResource App.PrimaryHover}" /></Trigger>
+                  <Trigger Property="IsKeyboardFocused" Value="True"><Setter Property="Background" Value="#1D48B0" /></Trigger>
+                </ControlTemplate.Triggers>
+              </ControlTemplate></Button.Template>
+            </Button>
+          </Grid>
+          <UniformGrid Columns="3">
+            <Button Style="{StaticResource App.RemoteKey}" Margin="0,0,8,0" Command="{Binding SendKeyCommand}" CommandParameter="{x:Static cmd:TcastKey.Back}" AutomationProperties.Name="返回"><StackPanel><Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Back}" Height="18" Margin="0,0,0,8" /><TextBlock Text="返回" FontSize="12" HorizontalAlignment="Center" /></StackPanel></Button>
+            <Button Style="{StaticResource App.RemoteKey}" Margin="0,0,8,0" Command="{Binding SendKeyCommand}" CommandParameter="{x:Static cmd:TcastKey.MainMenu}" AutomationProperties.Name="首页"><StackPanel><Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Home}" Height="18" Margin="0,0,0,8" /><TextBlock Text="首页" FontSize="12" HorizontalAlignment="Center" /></StackPanel></Button>
+            <Button Style="{StaticResource App.RemoteKey}" Command="{Binding SendKeyCommand}" CommandParameter="{x:Static cmd:TcastKey.SubMenu}" AutomationProperties.Name="菜单"><StackPanel><Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Menu}" Height="18" Margin="0,0,0,8" /><TextBlock Text="菜单" FontSize="12" HorizontalAlignment="Center" /></StackPanel></Button>
+          </UniformGrid>
+          <Border BorderBrush="{StaticResource App.Border}" BorderThickness="0,1,0,0" Margin="0,20,0,0" Padding="0,20,0,0">
+            <UniformGrid Columns="3">
+              <Button Style="{StaticResource App.SecondaryButton}" Background="{StaticResource App.SurfaceMuted}" Margin="0,0,8,0" Content="−  音量" Command="{Binding SendKeyCommand}" CommandParameter="{x:Static cmd:TcastKey.VolumeDown}" PreviewMouseLeftButtonDown="OnRepeatMouseDown" PreviewMouseLeftButtonUp="OnRepeatMouseUp" MouseLeave="OnRepeatMouseLeave" />
+              <Button Style="{StaticResource App.SecondaryButton}" Background="{StaticResource App.SurfaceMuted}" Margin="0,0,8,0" Command="{Binding SendKeyCommand}" CommandParameter="{x:Static cmd:TcastKey.Mute}" AutomationProperties.Name="静音"><StackPanel Orientation="Horizontal"><Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Mute}" Width="15" Height="15" Margin="0,0,8,0" /><TextBlock Text="静音" /></StackPanel></Button>
+              <Button Style="{StaticResource App.SecondaryButton}" Background="{StaticResource App.SurfaceMuted}" Content="＋  音量" Command="{Binding SendKeyCommand}" CommandParameter="{x:Static cmd:TcastKey.VolumeUp}" PreviewMouseLeftButtonDown="OnRepeatMouseDown" PreviewMouseLeftButtonUp="OnRepeatMouseUp" MouseLeave="OnRepeatMouseLeave" />
+            </UniformGrid>
+          </Border>
+          <TextBlock Text="支持方向键与 Enter · 文本编辑时不接管快捷键" Style="{StaticResource App.MutedText}" FontSize="11" TextAlignment="Center" Margin="0,16,0,20" />
+          <Border Background="{StaticResource App.PrimarySoft}" CornerRadius="8" Padding="16,12"><TextBlock Text="指令已发送 ≠ 电视已执行。&#x0a;电源可能使设备断开，不会自动重放或保证唤醒。" Style="{StaticResource App.MutedText}" FontSize="11" /></Border>
+        </StackPanel>
+      </ContentControl>
+      <ContentControl Style="{StaticResource App.Card}">
+        <StackPanel>
+          <DockPanel Margin="0,0,0,20"><TextBlock DockPanel.Dock="Right" Text="TEXT INPUT" Style="{StaticResource App.MutedText}" FontSize="10" /><StackPanel Orientation="Horizontal"><Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Keyboard}" Margin="0,0,10,0" /><TextBlock Text="文字输入" FontSize="16" FontWeight="SemiBold" /></StackPanel></DockPanel>
+          <Grid>
+            <TextBox Text="{Binding TextToSend, UpdateSourceTrigger=PropertyChanged}" MinHeight="124" AcceptsReturn="True" TextWrapping="Wrap" AutomationProperties.Name="要发送的文字" />
+            <TextBlock Text="输入想在电视上搜索的内容…" Margin="13,12" IsHitTestVisible="False">
+              <TextBlock.Style><Style TargetType="TextBlock" BasedOn="{StaticResource App.MutedText}"><Setter Property="Visibility" Value="Collapsed" /><Style.Triggers><DataTrigger Binding="{Binding TextToSend}" Value=""><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers></Style></TextBlock.Style>
+            </TextBlock>
+          </Grid>
+          <DockPanel Margin="0,20,0,0"><Button DockPanel.Dock="Right" Content="发送文字  →" Style="{StaticResource App.PrimaryButton}" Command="{Binding SendTextCommand}" Margin="12,0,0,0" /><TextBlock Text="电视需处于支持文字输入的界面。&#x0a;不支持正文中的 &gt;&gt; 或 NUL。" Style="{StaticResource App.MutedText}" FontSize="11" VerticalAlignment="Center" /></DockPanel>
+          <TextBlock Text="{Binding ErrorText}" Foreground="{StaticResource App.Danger}" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0" />
+        </StackPanel>
+      </ContentControl>
+      <ContentControl Style="{StaticResource App.Card}">
+        <StackPanel><TextBlock Text="键盘快捷操作" Style="{StaticResource App.CardTitle}" /><WrapPanel><Border Style="{StaticResource App.Pill}" Margin="0,0,10,10"><TextBlock Text="↑ ↓ ← →" FontFamily="{StaticResource App.MonoFont}" /></Border><TextBlock Text="方向移动" Style="{StaticResource App.MutedText}" Margin="0,4,24,10" /><Border Style="{StaticResource App.Pill}" Margin="0,0,10,10"><TextBlock Text="Enter" FontFamily="{StaticResource App.MonoFont}" /></Border><TextBlock Text="确认 / OK" Style="{StaticResource App.MutedText}" Margin="0,4,0,10" /></WrapPanel><TextBlock Text="Esc 返回 · 仅在遥控页生效 · 输入框 / 弹窗中不触发" Style="{StaticResource App.MutedText}" FontSize="11" /></StackPanel>
+      </ContentControl>
+      <ContentControl Style="{StaticResource App.Card}">
+        <StackPanel><DockPanel><TextBlock DockPanel.Dock="Right" Text="本地写入记录" Style="{StaticResource App.MutedText}" /><TextBlock Text="最近发送" Style="{StaticResource App.CardTitle}" /></DockPanel>
+          <TextBlock Text="暂无发送记录"><TextBlock.Style><Style TargetType="TextBlock" BasedOn="{StaticResource App.MutedText}"><Setter Property="Visibility" Value="Collapsed" /><Style.Triggers><DataTrigger Binding="{Binding RecentCommands.Count}" Value="0"><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock>
+          <ItemsControl ItemsSource="{Binding RecentCommands}"><ItemsControl.ItemTemplate><DataTemplate><Border BorderBrush="{StaticResource App.Border}" BorderThickness="0,0,0,1" Padding="0,10"><TextBlock Text="{Binding}" Style="{StaticResource App.MutedText}" FontFamily="{StaticResource App.MonoFont}" FontSize="11" /></Border></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+        </StackPanel>
+      </ContentControl>
+    </ItemsControl>
+  </StackPanel>
+</UserControl>

@@ -1,0 +1,11 @@
+# 构建与发布产物
+bin/
+obj/
+artifacts/
+.capture/
+
+# 用户级 IDE / 测试残留
+.vs/
+TestResults/
+*.user
+*.suo

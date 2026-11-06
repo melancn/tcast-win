@@ -1,0 +1,71 @@
+<UserControl x:Class="TCast.Desktop.Views.DiagnosticsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:TCast.Desktop.Controls">
+  <ItemsControl>
+    <ItemsControl.ItemsPanel><ItemsPanelTemplate><controls:MasonryPanel MinCardWidth="380" Gap="20" MaxColumns="3" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+    <ContentControl Style="{StaticResource App.Card}">
+      <StackPanel>
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Right" Text="{Binding CountText}" Style="{StaticResource App.MutedText}" FontSize="10" />
+          <TextBlock Text="诊断条目" Style="{StaticResource App.CardTitle}" />
+        </DockPanel>
+        <DockPanel Margin="0,0,0,12">
+          <Button DockPanel.Dock="Right" Content="筛选" Style="{StaticResource App.SecondaryButton}" Command="{Binding ApplyFilterCommand}" Margin="10,0,0,0" />
+          <TextBox Text="{Binding Filter, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="按分类或正文筛选诊断条目" ToolTip="输入分类名（如 Connection）或正文片段" />
+        </DockPanel>
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+          <Button Style="{StaticResource App.PrimaryButton}" Command="{Binding ExportCommand}" Margin="0,0,10,0">
+            <StackPanel Orientation="Horizontal"><Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Download}" Width="15" Height="15" Margin="0,0,8,0" Stroke="White" /><TextBlock Text="导出日志" /></StackPanel>
+          </Button>
+          <Button Content="清空界面列表" Style="{StaticResource App.SecondaryButton}" Command="{Binding ClearViewCommand}" />
+        </StackPanel>
+        <TextBlock Text="{Binding StatusText}" Style="{StaticResource App.MutedText}" TextWrapping="Wrap" Margin="0,0,0,10" />
+        <TextBlock Text="暂无诊断记录" HorizontalAlignment="Center" Margin="0,16" Foreground="{StaticResource App.TextMuted}">
+          <TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Visibility" Value="Collapsed" /><Style.Triggers><DataTrigger Binding="{Binding IsEmpty}" Value="True"><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers></Style></TextBlock.Style>
+        </TextBlock>
+        <ListView ItemsSource="{Binding Entries}" BorderThickness="0" Background="Transparent" MaxHeight="480"
+                  ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="诊断日志列表">
+          <ListView.ItemContainerStyle><Style TargetType="ListViewItem">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListViewItem">
+              <Border BorderBrush="{StaticResource App.Border}" BorderThickness="0,0,0,1" Padding="0,8"><ContentPresenter /></Border>
+            </ControlTemplate></Setter.Value></Setter>
+          </Style></ListView.ItemContainerStyle>
+          <ListView.ItemTemplate><DataTemplate>
+            <StackPanel>
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="{Binding Timestamp, StringFormat={}{0:HH:mm:ss}}" FontFamily="{StaticResource App.MonoFont}" FontSize="11" Foreground="{StaticResource App.TextMuted}" />
+                <TextBlock Text="{Binding Level}" FontSize="11" FontWeight="SemiBold" Margin="10,0,0,0" />
+                <TextBlock Text="{Binding Category}" FontSize="11" Foreground="{StaticResource App.Primary}" Margin="10,0,0,0" />
+                <TextBlock Text="{Binding Scope}" FontFamily="{StaticResource App.MonoFont}" FontSize="10" Foreground="{StaticResource App.TextMuted}" Margin="10,0,0,0" TextTrimming="CharacterEllipsis" />
+              </StackPanel>
+              <TextBlock Text="{Binding Message}" TextWrapping="Wrap" FontSize="12" Margin="0,4,0,0" />
+            </StackPanel>
+          </DataTemplate></ListView.ItemTemplate>
+        </ListView>
+      </StackPanel>
+    </ContentControl>
+    <ContentControl Style="{StaticResource App.Card}">
+      <StackPanel>
+        <DockPanel><TextBlock DockPanel.Dock="Right" Text="LOCAL ONLY" Style="{StaticResource App.MutedText}" FontSize="10" /><TextBlock Text="记录范围" Style="{StaticResource App.CardTitle}" /></DockPanel>
+        <TextBlock Text="记录内容&#x0a;· 发现报文来源与状态变化&#x0a;· 连接状态、回包正文摘要与异常&#x0a;· 安装任务的本地阶段与租约" Style="{StaticResource App.MutedText}" />
+        <Border BorderBrush="{StaticResource App.Border}" BorderThickness="0,1,0,0" Margin="0,16,0,0" Padding="0,16,0,0">
+          <StackPanel>
+            <TextBlock Text="写入前已脱敏" FontWeight="SemiBold" Margin="0,0,0,6" />
+            <TextBlock Text="secret / token 等键值、本地完整路径与下载 URL 只保留可读部分；不落地原始握手敏感字段。" Style="{StaticResource App.MutedText}" />
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </ContentControl>
+    <ContentControl Style="{StaticResource App.Card}">
+      <StackPanel>
+        <TextBlock Text="不会显示的内容" Style="{StaticResource App.CardTitle}" />
+        <TextBlock Text="· 不估算或伪造 RTT&#x0a;· 不把“指令已发送”当作电视执行成功&#x0a;· 不显示任何屏幕镜像或遥控器实时画面&#x0a;· 不联网上传日志" Style="{StaticResource App.MutedText}" />
+        <Border Background="{StaticResource App.PrimarySoft}" CornerRadius="8" Padding="16,12" Margin="0,16,0,0">
+          <TextBlock Text="诊断记录只保存在本机内存，最多 500 条；退出应用后清空。" Style="{StaticResource App.MutedText}" FontSize="11" />
+        </Border>
+      </StackPanel>
+    </ContentControl>
+  </ItemsControl>
+</UserControl>

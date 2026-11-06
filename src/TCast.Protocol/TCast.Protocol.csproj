@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 纯协议库：不得引用 WPF、网络 I/O 或第三方 UI 包。 -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>TCast.Protocol</RootNamespace>
+    <AssemblyName>TCast.Protocol</AssemblyName>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="TCast.Protocol.Tests" />
+    <InternalsVisibleTo Include="TCast.Infrastructure" />
+    <InternalsVisibleTo Include="TCast.Infrastructure.Tests" />
+    <InternalsVisibleTo Include="TCast.Desktop.Tests" />
+  </ItemGroup>
+
+</Project>

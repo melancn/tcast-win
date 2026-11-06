@@ -1,0 +1,70 @@
+<UserControl x:Class="TCast.Desktop.Views.ApkView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:TCast.Desktop.Controls">
+  <ItemsControl>
+    <ItemsControl.ItemsPanel><ItemsPanelTemplate><controls:MasonryPanel MinCardWidth="380" Gap="20" MaxColumns="3" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+    <ContentControl Style="{StaticResource App.Card}">
+      <StackPanel>
+        <DockPanel><TextBlock DockPanel.Dock="Right" Text="LOCAL PACKAGE" Style="{StaticResource App.MutedText}" FontSize="10" /><TextBlock Text="选择应用安装包" Style="{StaticResource App.CardTitle}" /></DockPanel>
+        <Border BorderBrush="#D9E4F7" BorderThickness="1" CornerRadius="10" Background="#F8FAFF" Padding="24" Margin="0,0,0,24">
+          <StackPanel>
+            <Border Background="{StaticResource App.PrimarySoft}" Width="60" Height="60" CornerRadius="16" HorizontalAlignment="Center" Margin="0,0,0,16"><Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Apk}" Stroke="{StaticResource App.Primary}" Width="30" Height="30" /></Border>
+            <TextBlock Text="从电脑选择 APK 文件" FontWeight="SemiBold" HorizontalAlignment="Center" />
+            <TextBlock Text="应用名称与包名将从文件中自动读取" Style="{StaticResource App.MutedText}" TextAlignment="Center" Margin="0,8,0,16" />
+            <Button Style="{StaticResource App.SecondaryButton}" HorizontalAlignment="Center" Command="{Binding PickFileCommand}"><StackPanel Orientation="Horizontal"><Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Folder}" Width="16" Height="16" Margin="0,0,8,0" /><TextBlock Text="选择 APK 文件" /></StackPanel></Button>
+          </StackPanel>
+        </Border>
+        <DockPanel Margin="0,0,0,16"><TextBlock DockPanel.Dock="Right" Text="只读 · 自动解析" Style="{StaticResource App.MutedText}" FontSize="11" /><TextBlock Text="应用信息" FontWeight="SemiBold" /></DockPanel>
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="88" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+          <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+          <TextBlock Text="应用名称" Style="{StaticResource App.MutedText}" Margin="0,0,0,14" /><TextBlock Grid.Column="1" Text="{Binding Metadata.DisplayName, TargetNullValue=等待选择文件, FallbackValue=等待选择文件}" TextWrapping="Wrap" FontSize="13" />
+          <TextBlock Grid.Row="1" Text="包名" Style="{StaticResource App.MutedText}" Margin="0,0,0,14" /><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Metadata.PackageName, TargetNullValue=—, FallbackValue=—}" TextWrapping="Wrap" FontFamily="{StaticResource App.MonoFont}" FontSize="12" />
+          <TextBlock Grid.Row="2" Text="版本" Style="{StaticResource App.MutedText}" Margin="0,0,0,14" /><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding VersionText}" TextWrapping="Wrap" FontSize="12" />
+          <TextBlock Grid.Row="3" Text="版本代码" Style="{StaticResource App.MutedText}" /><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding VersionCodeText}" TextWrapping="Wrap" FontSize="12" />
+        </Grid>
+        <TextBlock Text="名称使用包名" Foreground="{StaticResource App.Warning}" FontSize="12" Visibility="{Binding NameUsesPackage, Converter={StaticResource BoolToVisibility}}" />
+        <TextBlock Text="正在解析应用信息…" Style="{StaticResource App.MutedText}" Visibility="{Binding IsParsing, Converter={StaticResource BoolToVisibility}}" />
+        <TextBlock Text="{Binding ParseError}" TextWrapping="Wrap" Foreground="{StaticResource App.Danger}" FontSize="12" Margin="0,8,0,0" />
+        <Button Style="{StaticResource App.PrimaryButton}" Margin="0,16,0,0" Command="{Binding SendCommand}"><StackPanel Orientation="Horizontal"><Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Upload}" Width="16" Height="16" Margin="0,0,10,0" /><TextBlock Text="发送到电视并请求安装" /></StackPanel></Button>
+        <TextBlock Text="只向当前已连接的电视发送；包名不支持手动填写。" Style="{StaticResource App.MutedText}" FontSize="11" Margin="0,14,0,0" />
+      </StackPanel>
+    </ContentControl>
+    <ContentControl Style="{StaticResource App.Card}">
+      <StackPanel>
+        <DockPanel><Border DockPanel.Dock="Right" Style="{StaticResource App.Pill}"><TextBlock Text="{Binding TaskStateText, TargetNullValue=空闲, FallbackValue=空闲}" FontSize="11" Foreground="{StaticResource App.Primary}" /></Border><TextBlock Text="当前任务" Style="{StaticResource App.CardTitle}" /></DockPanel>
+        <TextBlock Text="解析文件 → 提供下载 → 电视安装 → 确认结果" Style="{StaticResource App.MutedText}" FontSize="11" Margin="0,12,0,16" />
+        <TextBlock Text="目标电视" Style="{StaticResource App.MutedText}" FontSize="11" />
+        <TextBlock Text="{Binding TargetText}" TextWrapping="Wrap" Margin="0,4,0,12" />
+        <TextBlock Text="电脑 IPv4 / 实际 HTTP 监听地址" Style="{StaticResource App.MutedText}" FontSize="11" />
+        <TextBlock Text="{Binding LocalAddressText}" TextWrapping="Wrap" Margin="0,4,0,4" />
+        <TextBlock Text="{Binding DownloadAddress, TargetNullValue=文件服务未启动}" TextWrapping="Wrap" Margin="0,0,0,12" />
+        <TextBlock Text="仅目标电视 IP 可下载；本机监听成功不代表电视可达。请仅在受信任的专用网络允许本应用通过防火墙。" Style="{StaticResource App.MutedText}" FontSize="11" Margin="0,0,0,12" />
+        <ProgressBar Height="6" Minimum="0" Maximum="100" Value="{Binding Progress, TargetNullValue=0}" IsIndeterminate="{Binding IsIndeterminate}" Background="{StaticResource App.PrimarySoft}" Foreground="{StaticResource App.Primary}" BorderThickness="0" />
+        <TextBlock Text="{Binding TaskDetail}" Style="{StaticResource App.MutedText}" Margin="0,12,0,0" />
+        <TextBlock Text="结果未知：文件服务仍在租约内保留。请查看电视，勿重复请求安装。" Foreground="{StaticResource App.Warning}" TextWrapping="Wrap" FontSize="12" Margin="0,12,0,0" Visibility="{Binding HasLease, Converter={StaticResource BoolToVisibility}}" />
+        <Button Content="停止等待（不取消电视安装）" Style="{StaticResource App.SecondaryButton}" Command="{Binding StopWaitingCommand}" Margin="0,12,0,0" />
+        <Button Content="停止本地文件服务" Style="{StaticResource App.SecondaryButton}" Command="{Binding StopServingCommand}" Margin="0,8,0,0" />
+        <Border Background="{StaticResource App.PrimarySoft}" CornerRadius="8" Padding="16,12" Margin="0,20,0,0"><TextBlock Text="下载 100% 不等于安装成功。&#x0a;只有收到电视的安装成功回包后，才确认完成。" Style="{StaticResource App.MutedText}" FontSize="11" /></Border>
+      </StackPanel>
+    </ContentControl>
+    <ContentControl Style="{StaticResource App.Card}">
+      <StackPanel>
+        <TextBlock Text="最近完成" Style="{StaticResource App.CardTitle}" />
+        <Path Style="{StaticResource App.Icon}" Data="{StaticResource Icon.Clock}" Stroke="#A9BDE0" Width="32" Height="32" Margin="0,12,0,12" />
+        <TextBlock Text="完成与未知结果均保留；迟到终态会更新记录。" Style="{StaticResource App.MutedText}" FontSize="11" Margin="0,0,0,16" />
+        <ItemsControl ItemsSource="{Binding RecentTasks}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <StackPanel Margin="0,0,0,14">
+                <TextBlock Text="{Binding Application}" TextWrapping="Wrap" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding Result}" Style="{StaticResource App.MutedText}" Margin="0,4,0,0" />
+              </StackPanel>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+    </ContentControl>
+  </ItemsControl>
+</UserControl>
