@@ -285,7 +285,7 @@ public sealed class ConnectionUiTests
         public Uri? DownloadUrl => null;
         public Task StartAsync(TCast.Protocol.Models.ApkMetadata metadata, TCast.Infrastructure.Apk.ApkSnapshot snapshot,
             IPAddress localAddress, IPAddress targetAddress, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public Task StopWaitingAsync() => Task.CompletedTask;
+
         public Task StopServingAsync() => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

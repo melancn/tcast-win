@@ -34,7 +34,7 @@
     <ContentControl Style="{StaticResource App.Card}">
       <StackPanel>
         <DockPanel><Border DockPanel.Dock="Right" Style="{StaticResource App.Pill}"><TextBlock Text="{Binding TaskStateText, TargetNullValue=空闲, FallbackValue=空闲}" FontSize="11" Foreground="{StaticResource App.Primary}" /></Border><TextBlock Text="当前任务" Style="{StaticResource App.CardTitle}" /></DockPanel>
-        <TextBlock Text="解析文件 → 提供下载 → 电视安装 → 确认结果" Style="{StaticResource App.MutedText}" FontSize="11" Margin="0,12,0,16" />
+        <TextBlock Text="解析文件 → 提供下载 → 电视自行安装（结果以电视为准）" Style="{StaticResource App.MutedText}" FontSize="11" Margin="0,12,0,16" />
         <TextBlock Text="目标电视" Style="{StaticResource App.MutedText}" FontSize="11" />
         <TextBlock Text="{Binding TargetText}" TextWrapping="Wrap" Margin="0,4,0,12" />
         <TextBlock Text="电脑 IPv4 / 实际 HTTP 监听地址" Style="{StaticResource App.MutedText}" FontSize="11" />
@@ -43,10 +43,9 @@
         <TextBlock Text="仅目标电视 IP 可下载；本机监听成功不代表电视可达。请仅在受信任的专用网络允许本应用通过防火墙。" Style="{StaticResource App.MutedText}" FontSize="11" Margin="0,0,0,12" />
         <ProgressBar Height="6" Minimum="0" Maximum="100" Value="{Binding Progress, TargetNullValue=0}" IsIndeterminate="{Binding IsIndeterminate}" Background="{StaticResource App.PrimarySoft}" Foreground="{StaticResource App.Primary}" BorderThickness="0" />
         <TextBlock Text="{Binding TaskDetail}" Style="{StaticResource App.MutedText}" Margin="0,12,0,0" />
-        <TextBlock Text="结果未知：文件服务仍在租约内保留。请查看电视，勿重复请求安装。" Foreground="{StaticResource App.Warning}" TextWrapping="Wrap" FontSize="12" Margin="0,12,0,0" Visibility="{Binding HasLease, Converter={StaticResource BoolToVisibility}}" />
-        <Button Content="停止等待（不取消电视安装）" Style="{StaticResource App.SecondaryButton}" Command="{Binding StopWaitingCommand}" Margin="0,12,0,0" />
-        <Button Content="停止本地文件服务" Style="{StaticResource App.SecondaryButton}" Command="{Binding StopServingCommand}" Margin="0,8,0,0" />
-        <Border Background="{StaticResource App.PrimarySoft}" CornerRadius="8" Padding="16,12" Margin="0,20,0,0"><TextBlock Text="下载 100% 不等于安装成功。&#x0a;只有收到电视的安装成功回包后，才确认完成。" Style="{StaticResource App.MutedText}" FontSize="11" /></Border>
+        <TextBlock Text="本地文件服务运行中：电视拉取完成前请勿停止；停止后需再次发送才会重新提供下载。" Foreground="{StaticResource App.Warning}" TextWrapping="Wrap" FontSize="12" Margin="0,12,0,0" Visibility="{Binding HasLease, Converter={StaticResource BoolToVisibility}}" />
+        <Button Content="停止本地文件服务" Style="{StaticResource App.SecondaryButton}" Command="{Binding StopServingCommand}" Margin="0,12,0,0" />
+        <Border Background="{StaticResource App.PrimarySoft}" CornerRadius="8" Padding="16,12" Margin="0,20,0,0"><TextBlock Text="不等待电视回包：安装请求与下载地址发出后由电视自行拉取与安装，端口与文件服务保留到你停止或下一次发送。" Style="{StaticResource App.MutedText}" FontSize="11" /></Border>
       </StackPanel>
     </ContentControl>
     <ContentControl Style="{StaticResource App.Card}">

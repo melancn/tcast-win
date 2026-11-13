@@ -35,7 +35,6 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<IApkTransferService>(provider => new ApkTransferService(
             provider.GetRequiredService<IConnectionCoordinator>(),
             provider.GetRequiredService<IApkHttpServer>(),
-            provider.GetRequiredService<TimeProvider>(),
             diagnostics: provider.GetRequiredService<IDiagnosticsService>()));
         return services;
     }

@@ -12,8 +12,14 @@ using TCast.Protocol.Security;
 
 namespace TCast.Infrastructure.Apk;
 
+/// <summary>
+/// 本地安装命令发送与 HTTP 文件服务编排。
+/// 命令写出后立即返回，不等待电视回包；监听与资产保留到停止服务或下一次发送（监听复用）。
+/// </summary>
 public sealed class ApkTransferService : IApkTransferService
 {
+    private const string SentDetail = "已发送安装请求，未等待电视回包；结果以电视为准";
+
     private sealed record View(ApkTransferProgress? Current, bool IsBusy, bool HasLease, Uri? DownloadUrl);
 
     private sealed class Attempt(ConnectionSession session, string key, CancellationToken cancellation)
@@ -22,59 +28,45 @@ public sealed class ApkTransferService : IApkTransferService
         public string Key { get; } = key;
         public CancellationTokenSource Cancellation { get; } = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public CancellationTokenRegistration Registration { get; set; }
-        public ITimer? Timer { get; set; }
-        public long TimerVersion { get; set; }
         public bool Sent { get; set; }
-        public bool Unknown { get; set; }
         public bool Terminal { get; set; }
-        public bool Serving { get; set; }
+        public bool Registered { get; set; }
     }
 
     private readonly IConnectionCoordinator _coordinator;
     private readonly IApkHttpServer _http;
-    private readonly TimeProvider _time;
     private readonly IDiagnosticsService? _diagnostics;
-    private readonly TimeSpan _responseTimeout;
-    private readonly TimeSpan _leaseDuration;
     private readonly Channel<Func<Task>> _messages = Channel.CreateUnbounded<Func<Task>>(new UnboundedChannelOptions
     {
         SingleReader = true,
         AllowSynchronousContinuations = false,
     });
-    private readonly HashSet<(ConnectionSession Session, string Key)> _used = [];
     private readonly List<Task> _background = [];
-    private readonly Dictionary<(ConnectionSession Session, string Key), ApkTransferProgress> _history = [];
     private readonly CancellationTokenSource _lifetime = new();
-    private CancellationTokenSource? _preparation;
-    private readonly Task _worker;
     private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Task _worker;
+    private CancellationTokenSource? _preparation;
     private View _view = new(null, false, false, null);
     private Attempt? _attempt;
+    private IPAddress? _servingAddress;
+    private bool _serving;
     private int _disposing;
 
-    public ApkTransferService(IConnectionCoordinator coordinator, IApkHttpServer http, TimeProvider timeProvider,
-        TimeSpan? responseTimeout = null, TimeSpan? unknownLeaseDuration = null, IDiagnosticsService? diagnostics = null)
+    public ApkTransferService(IConnectionCoordinator coordinator, IApkHttpServer http,
+        IDiagnosticsService? diagnostics = null)
     {
         ArgumentNullException.ThrowIfNull(coordinator);
         ArgumentNullException.ThrowIfNull(http);
-        ArgumentNullException.ThrowIfNull(timeProvider);
         _coordinator = coordinator;
         _http = http;
-        _time = timeProvider;
         _diagnostics = diagnostics;
-        _responseTimeout = responseTimeout ?? TimeSpan.FromSeconds(120);
-        _leaseDuration = unknownLeaseDuration ?? TimeSpan.FromMinutes(5);
-        if (_responseTimeout <= TimeSpan.Zero || _leaseDuration <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(responseTimeout));
-        }
+        _http.AssetDownloaded += OnAssetDownloaded;
         _coordinator.Connection.ReplyReceived += OnReply;
-        _coordinator.StateChanged += OnState;
         _worker = Task.Run(ProcessAsync);
     }
 
     public event EventHandler<ApkTransferProgress>? ProgressChanged;
+
     public bool IsBusy => Volatile.Read(ref _view).IsBusy;
     public bool HasLease => Volatile.Read(ref _view).HasLease;
     public ApkTransferProgress? Current => Volatile.Read(ref _view).Current;
@@ -90,7 +82,7 @@ public sealed class ApkTransferService : IApkTransferService
         Attempt? attempt = null;
         await InvokeAsync(async () =>
         {
-            if (IsBusy) { throw new InvalidOperationException("仍有安装任务或文件服务租约"); }
+            if (Volatile.Read(ref _preparation) is not null) { throw new InvalidOperationException("仍有安装任务正在准备"); }
             cancellationToken.ThrowIfCancellationRequested();
             ConnectionSession session = _coordinator.Session ?? throw new InvalidOperationException("电视尚未连接");
             if (_coordinator.State != ConnectionState.Connected || !Equals(_coordinator.Target, targetAddress))
@@ -98,20 +90,20 @@ public sealed class ApkTransferService : IApkTransferService
                 throw new InvalidOperationException("安装目标与当前连接不一致");
             }
             string key = PathTaskKey.FromPath(Path.GetFullPath(snapshot.OriginalPath));
-            if (_used.Contains((session, key))) { throw new InvalidOperationException("此会话已尝试发送同一文件，请重新连接后再试"); }
-            RetireAttempt();
+            if (_attempt is { } previous) { Retire(previous); }
             attempt = new Attempt(session, key, cancellationToken);
             using var preparation = CancellationTokenSource.CreateLinkedTokenSource(attempt.Cancellation.Token, _lifetime.Token);
             Volatile.Write(ref _preparation, preparation);
             _attempt = attempt;
-            Publish(new(key, metadata, ApkTransferState.Validating, null, null, targetAddress), true, false, null);
+            Publish(new(key, metadata, ApkTransferState.Validating, null, null, targetAddress),
+                true, _serving, null);
             try
             {
                 Validate(metadata, snapshot, localAddress, targetAddress);
-                await _http.StartAsync(localAddress, preparation.Token).ConfigureAwait(false);
+                await StartServingAsync(localAddress, preparation.Token).ConfigureAwait(false);
                 ApkAsset asset = await _http.RegisterSnapshotAsync(snapshot.SnapshotPath, key, targetAddress,
                     preparation.Token).ConfigureAwait(false);
-                attempt.Serving = true;
+                attempt.Registered = true;
                 Validate(metadata, snapshot, localAddress, targetAddress);
                 if (asset.Bytes != snapshot.Bytes || !SamePath(asset.SnapshotPath, snapshot.SnapshotPath) || asset.Key != key)
                 {
@@ -125,14 +117,8 @@ public sealed class ApkTransferService : IApkTransferService
                 {
                     throw new InvalidOperationException("安装准备期间连接已改变");
                 }
-                Publish(Current! with { State = ApkTransferState.Serving }, true, false, asset.Url);
-                _used.Add((session, key));
+                Publish(new(key, metadata, ApkTransferState.Serving, null, null, targetAddress), true, true, asset.Url);
                 attempt.Sent = true;
-                Attempt captured = attempt;
-                attempt.Registration = cancellationToken.Register(() => Post(() => UnknownAsync(captured,
-                    ApkTransferState.LocalWaitStopped, "已停止本地等待，电视安装结果未知")));
-                SetTimer(attempt, _responseTimeout, () => UnknownAsync(captured,
-                    ApkTransferState.TimedOutUnknown, "等待电视结果超时，安装结果未知"));
                 Task sending;
                 try { sending = _coordinator.Connection.SendAsync(command, session, attempt.Cancellation.Token); }
                 catch (Exception ex) { sending = Task.FromException(ex); }
@@ -142,9 +128,10 @@ public sealed class ApkTransferService : IApkTransferService
             catch (Exception)
             {
                 attempt.Terminal = true;
-                await ReleaseAsync(attempt).ConfigureAwait(false);
+                attempt.Cancellation.Cancel();
+                ReleaseAsset(attempt);
                 Publish(Current! with { State = ApkTransferState.LocalPreparationFailed, Progress = null,
-                    Detail = "本地准备失败，未发送安装命令" }, false, false, null);
+                    Detail = "本地准备失败，未发送安装命令" }, false, _serving, null);
                 attempt.Started.TrySetResult();
                 throw;
             }
@@ -152,10 +139,6 @@ public sealed class ApkTransferService : IApkTransferService
         }).ConfigureAwait(false);
         await attempt!.Started.Task.ConfigureAwait(false);
     }
-
-    public Task StopWaitingAsync() => InvokeAsync(() => _attempt is { Sent: true } attempt
-        ? UnknownAsync(attempt, ApkTransferState.LocalWaitStopped, "已停止本地等待，电视安装结果未知")
-        : Task.CompletedTask);
 
     public Task StopServingAsync()
     {
@@ -166,17 +149,37 @@ public sealed class ApkTransferService : IApkTransferService
 
     private async Task StopServingCoreAsync()
     {
-        if (_attempt is not { } attempt) { await _http.StopAsync().ConfigureAwait(false); return; }
-        attempt.Cancellation.Cancel();
-        await ReleaseAsync(attempt).ConfigureAwait(false);
-        ApkTransferProgress progress = Current!;
-        if (!attempt.Terminal && !attempt.Unknown)
+        Attempt? attempt = _attempt;
+        if (attempt is not null)
         {
-            attempt.Unknown = true;
-            progress = progress with { State = ApkTransferState.LocalWaitStopped, Progress = null };
+            attempt.Terminal = true;
+            attempt.Cancellation.Cancel();
+            ReleaseAsset(attempt);
         }
-        Publish(progress with { Detail = progress.IsTerminal ? progress.Detail : "本地文件服务已停止，电视安装结果未知" }, false, false, null);
-        attempt.Started.TrySetResult();
+        try
+        {
+            await _http.StopAsync().ConfigureAwait(false);
+            _serving = false;
+            _servingAddress = null;
+        }
+        catch (Exception)
+        {
+            _serving = true;
+        }
+        if (Current is { } current)
+        {
+            current = current with { Progress = null };
+            if (!current.IsTerminal)
+            {
+                current = current with { State = ApkTransferState.Sent, Detail = "已停止本地文件服务；电视安装结果以电视为准" };
+            }
+            if (_serving)
+            {
+                current = current with { Detail = "本地文件服务清理失败，请再次停止服务" };
+            }
+            Publish(current, false, _serving, null);
+        }
+        attempt?.Started.TrySetResult();
     }
 
     private async Task ObserveSendAsync(Attempt attempt, Task sending)
@@ -184,21 +187,23 @@ public sealed class ApkTransferService : IApkTransferService
         Exception? error = null;
         try { await sending.WaitAsync(attempt.Cancellation.Token).ConfigureAwait(false); }
         catch (Exception ex) { error = ex; }
-        Post(async () =>
+        Post(() =>
         {
-            if (ReferenceEquals(_attempt, attempt) && !attempt.Terminal && !attempt.Unknown)
+            if (ReferenceEquals(_attempt, attempt) && !attempt.Terminal && Current is { } current)
             {
                 if (error is not null)
                 {
-                    await UnknownAsync(attempt, ApkTransferState.ConnectionLostUnknown,
-                        "本地发送未确认，命令可能已送达，电视安装结果未知").ConfigureAwait(false);
+                    Publish(current with { State = ApkTransferState.ConnectionLostUnknown, Progress = null,
+                        Detail = "本地发送未确认，命令可能已送达；结果以电视为准" }, false, _serving, DownloadUrl);
                 }
-                else if (Current!.State == ApkTransferState.Serving)
+                else if (current.State == ApkTransferState.Serving)
                 {
-                    Publish(Current with { State = ApkTransferState.AwaitingDownload }, true, HasLease, DownloadUrl);
+                    Publish(current with { State = ApkTransferState.AwaitingDownload, Detail = SentDetail },
+                        false, _serving, DownloadUrl);
                 }
             }
             attempt.Started.TrySetResult();
+            return Task.CompletedTask;
         });
         if (!sending.IsCompleted)
         {
@@ -207,42 +212,46 @@ public sealed class ApkTransferService : IApkTransferService
         }
     }
 
-    private void OnReply(object? sender, (ConnectionSession Session, TcastReply Reply) value) =>
-        Post(() => ReplyAsync(value.Session, value.Reply));
-
-    private void OnState(object? sender, ConnectionState state) => Post(async () =>
+    private void OnReply(object? sender, (ConnectionSession Session, TcastReply Reply) value) => Post(() =>
     {
-        if (_attempt is { Sent: true, Terminal: false } attempt &&
-            (state == ConnectionState.Disconnected || _coordinator.Session != attempt.Session))
-        {
-            await UnknownAsync(attempt, ApkTransferState.ConnectionLostUnknown,
-                "连接已断开或会话已改变，电视安装结果未知").ConfigureAwait(false);
-        }
+        Reply(value.Session, value.Reply);
+        return Task.CompletedTask;
     });
 
-    private async Task ReplyAsync(ConnectionSession session, TcastReply reply)
+    private void OnAssetDownloaded(object? sender, ApkAsset asset) => Post(() =>
     {
-        foreach (var item in _history.ToArray())
+        if (_attempt is { Sent: true, Terminal: false } attempt && asset.Key == attempt.Key &&
+            Current is { State: ApkTransferState.AwaitingDownload or ApkTransferState.ConnectionLostUnknown } current)
         {
-            if (item.Key.Session != session) { continue; }
-            ApkReply? historical = ApkReplies.Match(reply.Raw, item.Value.Metadata.PackageName, item.Key.Key);
-            if (historical is not { IsTerminal: true }) { continue; }
-            _history.Remove(item.Key);
-            Notify(item.Value with { State = ToState(historical.Phase), Progress = null, Detail = null });
-            return;
+            Publish(current with { State = ApkTransferState.Downloading, Detail = null }, false, _serving, DownloadUrl);
         }
-        if (_attempt is not { Sent: true, Terminal: false } attempt || attempt.Session != session) { return; }
-        ApkReply? apk = ApkReplies.Match(reply.Raw, Current!.Metadata.PackageName, attempt.Key);
-        if (apk is null || apk.Phase == ApkPhase.Unknown || (attempt.Unknown && !apk.IsTerminal)) { return; }
+        return Task.CompletedTask;
+    });
+
+    private void Reply(ConnectionSession session, TcastReply reply)
+    {
+        if (_attempt is not { Sent: true, Terminal: false } attempt || attempt.Session != session ||
+            Current is not { } current) { return; }
+        ApkReply? apk = ApkReplies.Match(reply.Raw, current.Metadata.PackageName, attempt.Key);
+        if (apk is null || apk.Phase == ApkPhase.Unknown) { return; }
         ApkTransferState state = ToState(apk.Phase);
-        if (apk.IsTerminal)
+        if (apk.IsTerminal) { attempt.Terminal = true; }
+        Publish(current with { State = state, Progress = apk.IsTerminal ? null : apk.Progress, Detail = null },
+            false, _serving, DownloadUrl);
+    }
+
+    private async Task StartServingAsync(IPAddress localAddress, CancellationToken cancellationToken)
+    {
+        if (_serving && Equals(_servingAddress, localAddress)) { return; }
+        if (_serving)
         {
-            attempt.Terminal = true;
-            await ReleaseAsync(attempt).ConfigureAwait(false);
+            await _http.StopAsync().ConfigureAwait(false);
+            _serving = false;
+            _servingAddress = null;
         }
-        Publish(Current! with { State = state, Progress = apk.Progress, Detail = null },
-            !apk.IsTerminal && IsBusy, !apk.IsTerminal && HasLease, apk.IsTerminal ? null : DownloadUrl);
-        if (apk.IsTerminal) { attempt.Started.TrySetResult(); }
+        await _http.StartAsync(localAddress, cancellationToken).ConfigureAwait(false);
+        _serving = true;
+        _servingAddress = localAddress;
     }
 
     private static ApkTransferState ToState(ApkPhase phase) => phase switch
@@ -256,64 +265,29 @@ public sealed class ApkTransferService : IApkTransferService
         _ => throw new InvalidOperationException(),
     };
 
-    private Task UnknownAsync(Attempt attempt, ApkTransferState state, string detail)
+    /// <summary>注销本次尝试的资产，保留监听以便复用。</summary>
+    private void ReleaseAsset(Attempt attempt)
     {
-        if (!ReferenceEquals(_attempt, attempt) || attempt.Terminal || attempt.Unknown) { return Task.CompletedTask; }
-        attempt.Unknown = true;
-        attempt.Cancellation.Cancel();
-        if (attempt.Serving)
+        if (!attempt.Registered) { return; }
+        attempt.Registered = false;
+        _http.Unregister(attempt.Key);
+    }
+
+    /// <summary>结束上一次尝试：未终态则记为“已发送”，注销资产，但不停监听。</summary>
+    private void Retire(Attempt attempt)
+    {
+        if (!attempt.Terminal)
         {
-            SetTimer(attempt, _leaseDuration, async () =>
+            attempt.Terminal = true;
+            if (attempt.Sent && Current is { } current)
             {
-                if (!ReferenceEquals(_attempt, attempt) || !attempt.Serving) { return; }
-                await ReleaseAsync(attempt).ConfigureAwait(false);
-                Publish(Current! with { Detail = "本地文件服务租约已到期，电视安装结果未知" }, false, false, null);
-            });
+                Publish(current with { State = ApkTransferState.Sent, Progress = null, Detail = SentDetail },
+                    false, _serving, DownloadUrl);
+            }
         }
-        Publish(Current! with { State = state, Progress = null, Detail = detail }, attempt.Serving, attempt.Serving, DownloadUrl);
+        attempt.Cancellation.Cancel();
+        ReleaseAsset(attempt);
         attempt.Started.TrySetResult();
-        return Task.CompletedTask;
-    }
-
-    private void SetTimer(Attempt attempt, TimeSpan delay, Func<Task> callback)
-    {
-        attempt.Timer?.Dispose();
-        long version = ++attempt.TimerVersion;
-        attempt.Timer = _time.CreateTimer(_ => Post(() => ReferenceEquals(_attempt, attempt) && attempt.TimerVersion == version
-            ? callback() : Task.CompletedTask), null, delay, Timeout.InfiniteTimeSpan);
-    }
-
-    private async Task ReleaseAsync(Attempt attempt)
-    {
-        attempt.Timer?.Dispose();
-        attempt.Timer = null;
-        attempt.TimerVersion++;
-        attempt.Cancellation.Cancel();
-        attempt.Registration.Dispose();
-        try
-        {
-            if (attempt.Serving) { _http.Unregister(attempt.Key); }
-            await _http.StopAsync().ConfigureAwait(false);
-            attempt.Serving = false;
-        }
-        catch (Exception)
-        {
-            attempt.Serving = true;
-        }
-    }
-
-    private void RetireAttempt()
-    {
-        if (_attempt is not { } attempt) { return; }
-        if (attempt.Sent && !attempt.Terminal && Current is { } progress)
-        {
-            if (_history.Count >= 64) { _history.Remove(_history.Keys.First()); }
-            _history[(attempt.Session, attempt.Key)] = progress;
-        }
-        attempt.Timer?.Dispose();
-        attempt.Registration.Dispose();
-        attempt.Cancellation.Cancel();
-        attempt.Cancellation.Dispose();
     }
 
     private static bool SamePath(string first, string second) =>
@@ -347,13 +321,6 @@ public sealed class ApkTransferService : IApkTransferService
         _diagnostics?.Write(DiagnosticLevel.Info, "Apk",
             $"{(busy ? "进行中" : "已结束")} {current.State}{(current.Progress is { } progress ? $" {progress}%" : string.Empty)}" +
             $" {current.Metadata.PackageName}{(url is null ? string.Empty : " " + url.AbsoluteUri)}");
-        if (!busy && _attempt is { Serving: true })
-        {
-            busy = true;
-            lease = true;
-            url = DownloadUrl;
-            current = current with { Detail = "本地文件服务清理失败，请再次停止服务" };
-        }
         Volatile.Write(ref _view, new(current, busy, lease, url));
         Notify(current);
     }
@@ -389,11 +356,12 @@ public sealed class ApkTransferService : IApkTransferService
             try { await action().ConfigureAwait(false); }
             catch (Exception)
             {
-                if (_attempt is { } attempt && Current is { } current)
+                if (_attempt is { } attempt && Current is { } current && !current.IsTerminal)
                 {
-                    attempt.Unknown = true;
-                    Publish(current with { State = attempt.Terminal ? current.State : ApkTransferState.LocalWaitStopped,
-                        Detail = "本地状态处理异常，尚未确认的电视结果仍未知" }, attempt.Serving, attempt.Serving, DownloadUrl);
+                    attempt.Terminal = true;
+                    ReleaseAsset(attempt);
+                    Publish(current with { State = ApkTransferState.Sent, Progress = null,
+                        Detail = "本地状态处理异常，电视安装结果以电视为准" }, false, _serving, null);
                     attempt.Started.TrySetResult();
                 }
             }
@@ -407,7 +375,7 @@ public sealed class ApkTransferService : IApkTransferService
         {
             _lifetime.Cancel();
             _coordinator.Connection.ReplyReceived -= OnReply;
-            _coordinator.StateChanged -= OnState;
+            _http.AssetDownloaded -= OnAssetDownloaded;
             var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             Post(async () =>
             {
@@ -418,12 +386,7 @@ public sealed class ApkTransferService : IApkTransferService
             await Task.WhenAll(_background).ConfigureAwait(false);
             _messages.Writer.TryComplete();
             await _worker.ConfigureAwait(false);
-            if (_attempt is { Serving: true } remaining)
-            {
-                await ReleaseAsync(remaining).ConfigureAwait(false);
-                if (!remaining.Serving && Current is { } current) { Publish(current, false, false, null); }
-            }
-            RetireAttempt();
+            if (_attempt is { } remaining) { Retire(remaining); }
             _lifetime.Dispose();
             _disposed.TrySetResult();
         }

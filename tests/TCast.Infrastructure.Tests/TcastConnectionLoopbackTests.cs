@@ -173,7 +173,7 @@ public sealed class TcastConnectionLoopbackTests
     }
 
     [Fact]
-    public async Task RealInstallUsesHttpAndOnlyTelevisionTerminalConfirmsSuccess()
+    public async Task RealInstallSendsCommandWithoutWaitingAndReusesTheListener()
     {
         string path = Path.Combine(Path.GetTempPath(), $"tcast-transfer-{Guid.NewGuid():N}.apk");
         byte[] bytes = [1, 2, 3, 4, 5];
@@ -190,17 +190,20 @@ public sealed class TcastConnectionLoopbackTests
         await connecting.WaitAsync(TimeSpan.FromSeconds(3));
         Assert.Equal("160>>>>TCast Desktop", await ReadAsync(stream));
         await using var http = new KestrelApkHttpServer();
-        await using var transfer = new ApkTransferService(coordinator, http, TimeProvider.System);
+        await using var transfer = new ApkTransferService(coordinator, http);
         var downloaded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var installed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         transfer.ProgressChanged += (_, progress) =>
         {
-            if (progress.State == ApkTransferState.Downloading) { downloaded.TrySetResult(); }
+            if (progress.Progress == 100) { downloaded.TrySetResult(); }
             if (progress.State == ApkTransferState.Succeeded) { installed.TrySetResult(); }
         };
         var metadata = new ApkMetadata("test.pkg", "App", "1", "1", false,
             new(path, bytes.Length, File.GetLastWriteTimeUtc(path)));
         await transfer.StartAsync(metadata, snapshot, IPAddress.Loopback, IPAddress.Loopback);
+        Assert.False(transfer.IsBusy);
+        Assert.True(transfer.HasLease);
+        Assert.NotEqual(0, http.Port);
         string[] fields = (await ReadAsync(stream)).Split(">>", StringSplitOptions.None);
         Assert.Equal("223", fields[0]);
         Assert.Equal("INSTALL", fields[1]);
@@ -208,18 +211,25 @@ public sealed class TcastConnectionLoopbackTests
         Assert.Equal(transfer.DownloadUrl!.AbsoluteUri, fields[4]);
         using var client = new HttpClient(new SocketsHttpHandler { UseProxy = false });
         Assert.Equal(bytes, await client.GetByteArrayAsync(fields[4]));
-        Assert.True(transfer.IsBusy);
         await stream.WriteAsync(TcastWire.Encode($"223>>PROGRESS>>test.pkg>>App>>1>>100>>{fields[9]}"));
         await downloaded.Task.WaitAsync(TimeSpan.FromSeconds(3));
         Assert.Equal(100, transfer.Current!.Progress);
-        Assert.False(transfer.Current.IsTerminal);
-        Assert.True(transfer.IsBusy);
+        Assert.False(transfer.IsBusy);
         await stream.WriteAsync(TcastWire.Encode($"223>>INSTALL>>test.pkg>>App>>installed>>{fields[9]}"));
         await installed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal(ApkTransferState.Succeeded, transfer.Current!.State);
+        Assert.True(transfer.HasLease);
+        Assert.NotEqual(0, http.Port);
+
+        // 同一文件再次发送：不等待回包，复用同一个监听与端口。
+        int port = http.Port;
+        await transfer.StartAsync(metadata, snapshot, IPAddress.Loopback, IPAddress.Loopback);
+        Assert.Equal(port, http.Port);
         Assert.False(transfer.IsBusy);
-        Assert.False(transfer.HasLease);
-        Assert.Null(transfer.DownloadUrl);
-        Assert.Equal(0, http.Port);
+        Assert.True(transfer.HasLease);
+        string[] again = (await ReadAsync(stream)).Split(">>", StringSplitOptions.None);
+        Assert.Equal("INSTALL", again[1]);
+        Assert.Equal(bytes, await client.GetByteArrayAsync(again[4]));
         Assert.True(File.Exists(path));
     }
 

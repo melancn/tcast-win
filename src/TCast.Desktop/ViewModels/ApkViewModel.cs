@@ -69,7 +69,6 @@ public sealed partial class ApkViewModel : ObservableObject, IAsyncDisposable
     public bool CanPick => !_disposed && !TransferActive && !_transfer.IsBusy;
     public bool CanSend => CanPick && Connected && !IsParsing && Metadata is not null && _snapshot is not null &&
         _discovery.SelectedAdapter is not null;
-    public bool CanStopWaiting => !_disposed && _transfer.IsBusy && !_transfer.HasLease;
     public bool CanStopServing => !_disposed && (_transfer.IsBusy || _transfer.HasLease);
     public bool NameUsesPackage => Metadata?.NameUsesPackage == true;
     public bool IsIndeterminate => TransferActive && !HasLease && Progress is null;
@@ -162,6 +161,7 @@ public sealed partial class ApkViewModel : ObservableObject, IAsyncDisposable
         RefreshTransfer();
         try
         {
+            // 服务在命令写出后即返回，不等待电视回包。
             await _transfer.StartAsync(metadata, snapshot, adapter.Address, target, _lifetime.Token);
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
@@ -175,13 +175,6 @@ public sealed partial class ApkViewModel : ObservableObject, IAsyncDisposable
             _sending = false;
             if (!_disposed) { RefreshTransfer(); }
         }
-    }
-
-    [RelayCommand(CanExecute = nameof(CanStopWaiting))]
-    private async Task StopWaitingAsync()
-    {
-        await _transfer.StopWaitingAsync();
-        RefreshTransfer();
     }
 
     [RelayCommand(CanExecute = nameof(CanStopServing))]
@@ -205,8 +198,7 @@ public sealed partial class ApkViewModel : ObservableObject, IAsyncDisposable
     private void OnTransferChanged(object? sender, ApkTransferProgress progress) => _dispatcher.Post(() =>
     {
         if (_disposed) { return; }
-        if (progress.IsTerminal || progress.State is ApkTransferState.TimedOutUnknown or
-            ApkTransferState.ConnectionLostUnknown or ApkTransferState.LocalWaitStopped)
+        if (progress.IsTerminal || progress.State == ApkTransferState.ConnectionLostUnknown)
         {
             int index = RecentTasks.ToList().FindIndex(item => item.TaskKey == progress.TaskKey);
             var item = new ApkTaskRecord(progress.TaskKey, progress.Metadata.DisplayName, StateText(progress.State));
@@ -244,31 +236,28 @@ public sealed partial class ApkViewModel : ObservableObject, IAsyncDisposable
     {
         foreach (string property in new[] { nameof(CanSend), nameof(CanPick), nameof(NameUsesPackage),
             nameof(VersionText), nameof(VersionCodeText), nameof(TargetText), nameof(LocalAddressText),
-            nameof(IsIndeterminate), nameof(CanStopWaiting), nameof(CanStopServing) })
+            nameof(IsIndeterminate), nameof(CanStopServing) })
         {
             OnPropertyChanged(property);
         }
         SendCommand.NotifyCanExecuteChanged();
         PickFileCommand.NotifyCanExecuteChanged();
-        StopWaitingCommand.NotifyCanExecuteChanged();
         StopServingCommand.NotifyCanExecuteChanged();
     }
 
     private static string StateText(ApkTransferState state) => state switch
     {
+        ApkTransferState.Validating => "准备安装",
         ApkTransferState.Serving => "准备文件服务",
-        ApkTransferState.CommandSent => "安装请求已发送",
         ApkTransferState.AwaitingDownload => "等待电视拉取",
-        ApkTransferState.Downloading => "电视下载中",
+        ApkTransferState.Downloading => "电视拉取中",
         ApkTransferState.Installing => "电视安装中",
         ApkTransferState.Succeeded => "安装成功",
         ApkTransferState.DownloadFailed => "下载失败",
         ApkTransferState.InstallFailed => "安装失败",
         ApkTransferState.Denied => "电视拒绝安装",
-        ApkTransferState.TimedOutUnknown => "等待超时 · 结果未知",
-        ApkTransferState.ConnectionLostUnknown => "连接断开 · 结果未知",
-        ApkTransferState.LocalWaitStopped => "已停止等待 · 结果未知",
-        ApkTransferState.ParseFailed => "文件校验失败",
+        ApkTransferState.Sent => "已发送 · 结果以电视为准",
+        ApkTransferState.ConnectionLostUnknown => "发送未确认 · 结果未知",
         ApkTransferState.LocalPreparationFailed => "本地准备失败",
         _ => "准备安装",
     };

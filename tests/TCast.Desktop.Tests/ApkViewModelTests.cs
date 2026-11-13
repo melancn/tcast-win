@@ -61,19 +61,21 @@ public sealed class ApkViewModelTests
         await fixture.Reader.CompleteAsync("test.apk", "org.test");
         await select;
         await fixture.ViewModel.SendCommand.ExecuteAsync(null);
-        Assert.True(fixture.ViewModel.TransferActive);
-        Assert.False(fixture.ViewModel.CanSend);
-        Assert.False(fixture.ViewModel.PickFileCommand.CanExecute(null));
-        await fixture.ViewModel.SelectAsync("ignored.apk");
-        Assert.Equal("org.test", fixture.ViewModel.Metadata?.PackageName);
+        Assert.False(fixture.ViewModel.TransferActive);
+        Assert.True(fixture.ViewModel.HasLease);
+        Assert.True(fixture.ViewModel.CanSend);
+        Assert.True(fixture.ViewModel.PickFileCommand.CanExecute(null));
+        Task reselect = fixture.ViewModel.SelectAsync("ignored.apk");
+        await fixture.Reader.CompleteAsync("ignored.apk", "org.ignored");
+        await reselect;
+        Assert.Equal("org.ignored", fixture.ViewModel.Metadata?.PackageName);
         NetworkAdapter? original = fixture.Discovery.SelectedAdapter;
         fixture.Discovery.SelectedAdapter = original! with { Address = IPAddress.Parse("127.0.0.2") };
         Assert.Equal(original, fixture.Discovery.SelectedAdapter);
-        await fixture.ViewModel.StopWaitingCommand.ExecuteAsync(null);
         Assert.True(fixture.ViewModel.HasLease);
-        Assert.False(fixture.ViewModel.CanSend);
         await fixture.Connection.DisconnectAsync();
         Assert.False(fixture.Discovery.CanConnect);
+        Assert.False(fixture.ViewModel.CanSend);
         fixture.Transfer.Publish(ApkTransferState.Succeeded);
         Assert.False(fixture.ViewModel.TransferActive);
         Assert.Equal("安装成功", Assert.Single(fixture.ViewModel.RecentTasks).Result);
@@ -90,10 +92,10 @@ public sealed class ApkViewModelTests
         Assert.Equal("—", fixture.ViewModel.VersionCodeText);
         await fixture.ViewModel.SendCommand.ExecuteAsync(null);
         await fixture.ViewModel.StopServingCommand.ExecuteAsync(null);
-        Assert.True(fixture.Transfer.IsBusy);
+        Assert.True(fixture.Transfer.HasLease);
         fixture.Dialogs.Accept = true;
         await fixture.ViewModel.StopServingCommand.ExecuteAsync(null);
-        Assert.False(fixture.Transfer.IsBusy);
+        Assert.False(fixture.Transfer.HasLease);
     }
 
     private sealed class Fixture : IAsyncDisposable
@@ -150,27 +152,23 @@ public sealed class ApkViewModelTests
         public Task StartAsync(ApkMetadata metadata, ApkSnapshot snapshot, IPAddress localAddress, IPAddress targetAddress, CancellationToken cancellationToken = default)
         {
             Current = new("test", metadata, ApkTransferState.AwaitingDownload, null, null, targetAddress);
-            IsBusy = true;
+            IsBusy = false;
+            HasLease = true;
             ProgressChanged?.Invoke(this, Current);
             return Task.CompletedTask;
         }
         public void Publish(ApkTransferState state)
         {
             Current = Current! with { State = state };
-            if (Current.IsTerminal) { IsBusy = false; HasLease = false; }
+            if (Current.IsTerminal) { IsBusy = false; }
             ProgressChanged?.Invoke(this, Current);
         }
-        public Task StopWaitingAsync()
-        {
-            HasLease = true;
-            Publish(ApkTransferState.LocalWaitStopped);
-            return Task.CompletedTask;
-        }
+
         public Task StopServingAsync()
         {
             IsBusy = false;
             HasLease = false;
-            if (Current is not null) { Publish(ApkTransferState.LocalWaitStopped); }
+            if (Current is not null) { Publish(ApkTransferState.Sent); }
             return Task.CompletedTask;
         }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;

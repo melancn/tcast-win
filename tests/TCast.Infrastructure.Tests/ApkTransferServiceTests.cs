@@ -12,35 +12,55 @@ namespace TCast.Infrastructure.Tests;
 
 public sealed class ApkTransferServiceTests
 {
-    [Theory]
-    [InlineData("INSTALL", "installed", ApkTransferState.Succeeded)]
-    [InlineData("INSTALL", "denied", ApkTransferState.Denied)]
-    [InlineData("PROGRESS", "2", ApkTransferState.DownloadFailed)]
-    [InlineData("PROGRESS", "4", ApkTransferState.InstallFailed)]
-    [InlineData("PROGRESS", "5", ApkTransferState.Succeeded)]
-    public async Task DirectTerminalReplyWinsEvenWhenSendThrows(string action, string status, ApkTransferState expected)
+    [Fact]
+    public async Task StartReturnsAfterCommandWithoutWaitingForReply()
     {
         await using var fixture = new Fixture();
-        fixture.Connection.Send = (_, _) =>
-        {
-            fixture.Reply(action, status);
-            throw new IOException("write result uncertain");
-        };
         await fixture.Start();
-        await fixture.Drain();
-        Assert.Equal(expected, fixture.Service.Current!.State);
+        Assert.Equal(ApkTransferState.AwaitingDownload, fixture.Service.Current!.State);
+        Assert.False(fixture.Service.Current.IsTerminal);
         Assert.False(fixture.Service.IsBusy);
-        Assert.False(fixture.Service.HasLease);
-        Assert.Null(fixture.Service.DownloadUrl);
-        Assert.False(fixture.Http.Registered);
-        Assert.True(File.Exists(fixture.Snapshot.SnapshotPath));
+        Assert.True(fixture.Service.HasLease);
+        Assert.NotNull(fixture.Service.DownloadUrl);
+        Assert.True(fixture.Http.Registered(fixture.Key));
+        Assert.Equal(1, fixture.Connection.Sends);
         Assert.Equal(fixture.Connection.Session, fixture.Connection.SentSession);
         Assert.Contains(fixture.Key, fixture.Connection.Body!);
-        Assert.Equal(1, fixture.Connection.Sends);
+        Assert.Equal(1, fixture.Http.StartCount);
     }
 
     [Fact]
-    public async Task OnlyMatchingRepliesChangeProgressAndHundredPercentIsNotSuccess()
+    public async Task SameFileCanBeSentAgainAndReusesTheListener()
+    {
+        await using var fixture = new Fixture();
+        await fixture.Start();
+        await fixture.Start();
+        Assert.Equal(2, fixture.Connection.Sends);
+        Assert.Equal(1, fixture.Http.StartCount);
+        Assert.Equal(0, fixture.Http.StopCount);
+        Assert.True(fixture.Http.Registered(fixture.Key));
+        Assert.Equal(ApkTransferState.AwaitingDownload, fixture.Service.Current!.State);
+        Assert.True(fixture.Service.HasLease);
+    }
+
+    [Fact]
+    public async Task PassiveTerminalReplyUpdatesStateWithoutStoppingService()
+    {
+        await using var fixture = new Fixture();
+        await fixture.Start();
+        fixture.Reply("INSTALL", "installed");
+        await fixture.Drain();
+        Assert.Equal(ApkTransferState.Succeeded, fixture.Service.Current!.State);
+        Assert.True(fixture.Service.Current.IsTerminal);
+        Assert.False(fixture.Service.IsBusy);
+        Assert.True(fixture.Service.HasLease);
+        Assert.Equal(0, fixture.Http.StopCount);
+        await fixture.Start();
+        Assert.Equal(2, fixture.Connection.Sends);
+    }
+
+    [Fact]
+    public async Task OnlyMatchingRepliesChangeTheCurrentTask()
     {
         await using var fixture = new Fixture();
         await fixture.Start();
@@ -48,109 +68,97 @@ public sealed class ApkTransferServiceTests
         fixture.Connection.Emit("223>>INSTALL>>test.pkg>>App>>installed>>wrong");
         fixture.Connection.Emit($"223>>UNINSTALL>>test.pkg>>App>>installed>>{fixture.Key}");
         fixture.Connection.Emit($"223>>INSTALL>>test.pkg>>App>>installed>>{fixture.Key}", new(999));
-        fixture.Reply("INSTALL", "unrecognized");
+        fixture.Connection.Emit("223>>INSTALL>>test.pkg>>App>>unrecognized>>" + fixture.Key);
         await fixture.Drain();
         Assert.Equal(ApkTransferState.AwaitingDownload, fixture.Service.Current!.State);
         fixture.Reply("PROGRESS", "1", "100");
         await fixture.Drain();
         Assert.Equal(ApkTransferState.Downloading, fixture.Service.Current!.State);
         Assert.Equal(100, fixture.Service.Current.Progress);
-        Assert.True(fixture.Service.IsBusy);
-        Assert.False(fixture.Service.HasLease);
-        Assert.True(fixture.Http.Registered);
+        Assert.False(fixture.Service.IsBusy);
+        Assert.True(fixture.Service.HasLease);
         fixture.Reply("PROGRESS", "3", "invalid");
         await fixture.Drain();
         Assert.Equal(ApkTransferState.Installing, fixture.Service.Current!.State);
         Assert.Null(fixture.Service.Current.Progress);
     }
 
-    [Theory]
-    [InlineData("timeout", ApkTransferState.TimedOutUnknown)]
-    [InlineData("disconnect", ApkTransferState.ConnectionLostUnknown)]
-    [InlineData("stop", ApkTransferState.LocalWaitStopped)]
-    [InlineData("send", ApkTransferState.ConnectionLostUnknown)]
-    [InlineData("cancel", ApkTransferState.LocalWaitStopped)]
-    public async Task UnknownKeepsLeaseAndLateSameSessionTerminalReleasesIt(string cause, ApkTransferState expected)
+    [Fact]
+    public async Task AssetDownloadMovesToDownloadingAndOtherKeysAreIgnored()
     {
         await using var fixture = new Fixture();
-        using var cancellation = new CancellationTokenSource();
-        if (cause == "send") { fixture.Connection.Send = (_, _) => Task.FromException(new IOException()); }
-        await fixture.Start(cancellation.Token);
-        switch (cause)
-        {
-            case "timeout": fixture.Clock.Advance(TimeSpan.FromSeconds(120)); break;
-            case "disconnect": fixture.Connection.ChangeSession(null); break;
-            case "stop": await fixture.Service.StopWaitingAsync(); break;
-            case "cancel": cancellation.Cancel(); break;
-        }
+        await fixture.Start();
+        fixture.Http.RaiseDownloaded("other-key");
         await fixture.Drain();
-        Assert.Equal(expected, fixture.Service.Current!.State);
-        Assert.True(fixture.Service.IsBusy);
+        Assert.Equal(ApkTransferState.AwaitingDownload, fixture.Service.Current!.State);
+        fixture.Http.RaiseDownloaded(fixture.Key);
+        await fixture.WaitFor(ApkTransferState.Downloading);
+        Assert.False(fixture.Service.IsBusy);
         Assert.True(fixture.Service.HasLease);
-        Assert.True(fixture.Http.Registered);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Start());
-        fixture.Reply("PROGRESS", "1", "100");
-        await fixture.Drain();
-        Assert.Equal(expected, fixture.Service.Current.State);
-        fixture.Reply("INSTALL", "installed");
-        await fixture.Drain();
-        Assert.Equal(ApkTransferState.Succeeded, fixture.Service.Current.State);
-        Assert.False(fixture.Service.IsBusy);
-        Assert.False(fixture.Http.Registered);
     }
 
     [Fact]
-    public async Task LeaseExpiresRefreshesPropertiesAndSameSessionKeyCannotBeReused()
+    public async Task SendFailureReportsUnknownAndStillAllowsAnotherSend()
     {
         await using var fixture = new Fixture();
+        fixture.Connection.Send = (_, _) => Task.FromException(new IOException());
         await fixture.Start();
-        await fixture.Service.StopWaitingAsync();
-        fixture.Clock.Advance(TimeSpan.FromMinutes(5) - TimeSpan.FromTicks(1));
-        await fixture.Drain();
-        Assert.True(fixture.Service.IsBusy);
-        fixture.Clock.Advance(TimeSpan.FromTicks(1));
-        await fixture.Drain();
+        await fixture.WaitFor(ApkTransferState.ConnectionLostUnknown);
         Assert.False(fixture.Service.IsBusy);
-        Assert.False(fixture.Service.HasLease);
-        Assert.Null(fixture.Service.DownloadUrl);
-        Assert.Equal(ApkTransferState.LocalWaitStopped, fixture.Service.Current!.State);
-        Assert.False(fixture.Service.Current.IsTerminal);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Start());
-        fixture.Reply("INSTALL", "installed");
-        await fixture.Drain();
-        Assert.Equal(ApkTransferState.Succeeded, fixture.Service.Current.State);
-        fixture.Connection.ChangeSession(new(2));
+        Assert.True(fixture.Service.HasLease);
+        Assert.True(fixture.Http.Registered(fixture.Key));
+        fixture.Connection.Send = null;
         await fixture.Start();
-        fixture.Reply("INSTALL", "installed");
-        await fixture.Drain();
-        Assert.Equal(ApkTransferState.AwaitingDownload, fixture.Service.Current.State);
-        fixture.Connection.Emit($"223>>INSTALL>>test.pkg>>App>>installed>>{fixture.Key}", new(2));
-        await fixture.Drain();
-        Assert.Equal(ApkTransferState.Succeeded, fixture.Service.Current.State);
+        Assert.Equal(2, fixture.Connection.Sends);
+        Assert.Equal(ApkTransferState.AwaitingDownload, fixture.Service.Current!.State);
     }
 
     [Fact]
-    public async Task StopServingReleasesLeaseWithoutInventingTerminalAndPreservesCallerSnapshot()
+    public async Task StopServingReleasesListenerAndNextSendRestartsIt()
     {
         await using var fixture = new Fixture();
-        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        fixture.Connection.Send = (_, _) => pending.Task;
-        Task start = fixture.Start();
-        await fixture.WaitFor(ApkTransferState.Serving);
+        await fixture.Start();
         await fixture.Service.StopServingAsync();
-        await start.WaitAsync(TimeSpan.FromSeconds(3));
-        Assert.Equal(ApkTransferState.LocalWaitStopped, fixture.Service.Current!.State);
-        Assert.False(fixture.Service.Current.IsTerminal);
+        Assert.Equal(ApkTransferState.Sent, fixture.Service.Current!.State);
+        Assert.True(fixture.Service.Current.IsTerminal);
         Assert.False(fixture.Service.IsBusy);
         Assert.False(fixture.Service.HasLease);
         Assert.Null(fixture.Service.DownloadUrl);
-        Assert.True(File.Exists(fixture.Snapshot.SnapshotPath));
-        pending.SetException(new IOException());
-        await fixture.Drain();
-        Assert.Equal(ApkTransferState.LocalWaitStopped, fixture.Service.Current.State);
-        fixture.Reply("INSTALL", "installed");
-        await fixture.Drain();
-        Assert.Equal(ApkTransferState.Succeeded, fixture.Service.Current.State);
+        Assert.Equal(1, fixture.Http.StopCount);
+        Assert.False(fixture.Http.Running);
+        Assert.False(fixture.Http.Registered(fixture.Key));
+        await fixture.Start();
+        Assert.Equal(2, fixture.Http.StartCount);
+        Assert.True(fixture.Http.Running);
+    }
+
+    [Fact]
+    public async Task LocalAddressChangeRestartsTheListener()
+    {
+        await using var fixture = new Fixture();
+        await fixture.Start();
+        await fixture.Service.StartAsync(fixture.Metadata, fixture.Snapshot, IPAddress.Parse("127.0.0.2"),
+            IPAddress.Loopback);
+        Assert.Equal(1, fixture.Http.StopCount);
+        Assert.Equal(2, fixture.Http.StartCount);
+        Assert.Equal(IPAddress.Parse("127.0.0.2"), fixture.Http.Address);
+        Assert.Equal(2, fixture.Connection.Sends);
+    }
+
+    [Fact]
+    public async Task HttpCleanupFailureIsReportedAndCanBeRetried()
+    {
+        await using var fixture = new Fixture();
+        await fixture.Start();
+        fixture.Http.FailStops = 1;
+        await fixture.Service.StopServingAsync();
+        Assert.Equal(ApkTransferState.Sent, fixture.Service.Current!.State);
+        Assert.False(fixture.Service.IsBusy);
+        Assert.True(fixture.Service.HasLease);
+        Assert.Contains("清理失败", fixture.Service.Current.Detail);
+        await fixture.Service.StopServingAsync();
+        Assert.False(fixture.Service.HasLease);
+        Assert.Equal(1, fixture.Http.StopCount);
     }
 
     [Theory]
@@ -175,8 +183,9 @@ public sealed class ApkTransferServiceTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Start());
         Assert.Equal(ApkTransferState.LocalPreparationFailed, fixture.Service.Current!.State);
         Assert.False(fixture.Service.IsBusy);
+        Assert.False(fixture.Service.HasLease);
         Assert.Equal(0, fixture.Connection.Sends);
-        Assert.False(fixture.Http.Registered);
+        Assert.Equal(0, fixture.Http.StartCount);
     }
 
     [Fact]
@@ -185,11 +194,13 @@ public sealed class ApkTransferServiceTests
         await using var fixture = new Fixture();
         await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Service.StartAsync(fixture.Metadata,
             fixture.Snapshot, IPAddress.Loopback, IPAddress.Parse("127.0.0.2")));
+        Assert.Equal(0, fixture.Http.StartCount);
         fixture.Http.Registering = () => fixture.Connection.ChangeSession(new(2));
         await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Start());
         Assert.Equal(0, fixture.Connection.Sends);
         Assert.Equal(ApkTransferState.LocalPreparationFailed, fixture.Service.Current!.State);
-        Assert.False(fixture.Service.HasLease);
+        Assert.False(fixture.Service.IsBusy);
+        Assert.False(fixture.Http.Registered(fixture.Key));
     }
 
     [Fact]
@@ -198,56 +209,14 @@ public sealed class ApkTransferServiceTests
         await using var fixture = new Fixture();
         fixture.Connection.BeforeSend = () => fixture.Connection.ChangeSession(new(2));
         await fixture.Start();
-        await fixture.Drain();
+        await fixture.WaitFor(ApkTransferState.ConnectionLostUnknown);
         Assert.Equal(0, fixture.Connection.Sends);
-        Assert.Equal(ApkTransferState.ConnectionLostUnknown, fixture.Service.Current!.State);
         Assert.True(fixture.Service.HasLease);
-    }
-
-    [Fact]
-    public async Task DisposeStopsPendingSendAndTimersWithoutOwningSnapshot()
-    {
-        await using var fixture = new Fixture();
-        fixture.Connection.Send = (_, token) => Task.Delay(Timeout.InfiniteTimeSpan, token);
-        Task start = fixture.Start();
-        await fixture.WaitFor(ApkTransferState.Serving);
-        await fixture.Service.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));
-        await start.WaitAsync(TimeSpan.FromSeconds(3));
-        Assert.False(fixture.Http.Registered);
         Assert.False(fixture.Service.IsBusy);
-        Assert.True(File.Exists(fixture.Snapshot.SnapshotPath));
-        fixture.Clock.Advance(TimeSpan.FromHours(1));
-        fixture.Reply("INSTALL", "installed");
-        Assert.Equal(ApkTransferState.LocalWaitStopped, fixture.Service.Current!.State);
-        await Assert.ThrowsAsync<ObjectDisposedException>(() => fixture.Start());
     }
 
     [Fact]
-    public async Task LateTerminalForPreviousFileUpdatesHistoryWithoutReplacingCurrentTask()
-    {
-        await using var fixture = new Fixture();
-        await fixture.Start();
-        await fixture.Service.StopServingAsync();
-        var second = new ApkSnapshot(fixture.Snapshot.SnapshotPath, fixture.Snapshot.OriginalPath + ".second.apk", 3);
-        await fixture.Service.StartAsync(fixture.Metadata, second, IPAddress.Loopback, IPAddress.Loopback);
-        ApkTransferProgress current = fixture.Service.Current!;
-        var late = new TaskCompletionSource<ApkTransferProgress>(TaskCreationOptions.RunContinuationsAsynchronously);
-        fixture.Service.ProgressChanged += (_, progress) =>
-        {
-            if (progress.TaskKey == fixture.Key && progress.IsTerminal) { late.TrySetResult(progress); }
-        };
-        fixture.Reply("INSTALL", "installed");
-        Assert.Equal(ApkTransferState.Succeeded, (await late.Task.WaitAsync(TimeSpan.FromSeconds(3))).State);
-        Assert.Same(current, fixture.Service.Current);
-        Assert.True(fixture.Service.IsBusy);
-        Assert.False(fixture.Service.HasLease);
-        Assert.True(fixture.Http.Registered);
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task StopOrDisposeCancelsHttpPreparationBeforeSending(bool dispose)
+    public async Task StopServingDuringPreparationCancelsWithoutSending()
     {
         await using var fixture = new Fixture();
         var preparing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -258,8 +227,7 @@ public sealed class ApkTransferServiceTests
         };
         Task start = fixture.Start();
         await preparing.Task.WaitAsync(TimeSpan.FromSeconds(3));
-        Task stop = dispose ? fixture.Service.DisposeAsync().AsTask() : fixture.Service.StopServingAsync();
-        await stop.WaitAsync(TimeSpan.FromSeconds(3));
+        await fixture.Service.StopServingAsync().WaitAsync(TimeSpan.FromSeconds(3));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => start);
         Assert.Equal(0, fixture.Connection.Sends);
         Assert.False(fixture.Service.IsBusy);
@@ -267,26 +235,25 @@ public sealed class ApkTransferServiceTests
     }
 
     [Fact]
-    public async Task HttpCleanupFailureKeepsWorkerResponsiveAndCanBeRetried()
+    public async Task DisposeStopsListenerAndRejectsFurtherSends()
     {
         await using var fixture = new Fixture();
-        await fixture.Start();
-        fixture.Http.FailStops = 1;
-        fixture.Reply("INSTALL", "installed");
-        await fixture.Drain();
-        Assert.Equal(ApkTransferState.Succeeded, fixture.Service.Current!.State);
-        Assert.True(fixture.Service.IsBusy);
-        await fixture.Service.StopServingAsync().WaitAsync(TimeSpan.FromSeconds(3));
-        Assert.Equal(ApkTransferState.Succeeded, fixture.Service.Current.State);
+        fixture.Connection.Send = (_, token) => Task.Delay(Timeout.InfiniteTimeSpan, token);
+        Task start = fixture.Start();
+        await fixture.WaitFor(ApkTransferState.Serving);
+        await fixture.Service.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+        await start.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.False(fixture.Http.Running);
         Assert.False(fixture.Service.IsBusy);
         Assert.False(fixture.Service.HasLease);
+        Assert.True(File.Exists(fixture.Snapshot.SnapshotPath));
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => fixture.Start());
     }
 
     private sealed class Fixture : IAsyncDisposable
     {
         public FakeConnection Connection { get; } = new();
         public FakeHttp Http { get; } = new();
-        public ManualClock Clock { get; } = new();
         public ApkSnapshot Snapshot { get; }
         public ApkMetadata Metadata { get; set; }
         public ApkTransferService Service { get; }
@@ -300,14 +267,13 @@ public sealed class ApkTransferServiceTests
             Snapshot = new(file, Path.Combine(Path.GetTempPath(), $"应用 文件-{Guid.NewGuid():N}.apk"), 3);
             Metadata = new("test.pkg", "App", "1", "1", false,
                 new(file, 3, File.GetLastWriteTimeUtc(file)));
-            Service = new(new FakeCoordinator(Connection), Http, Clock);
+            Service = new(new FakeCoordinator(Connection), Http);
             Service.ProgressChanged += (_, progress) =>
             {
                 if (progress.TaskKey == Service.Current?.TaskKey && !ReferenceEquals(progress, Service.Current))
                 {
                     _inconsistencies.Add("Current was not published before the event");
                 }
-                if (Service.HasLease && !Service.IsBusy) { _inconsistencies.Add("Lease without busy"); }
             };
         }
 
@@ -316,6 +282,8 @@ public sealed class ApkTransferServiceTests
         public void Reply(string action, string status, string value = "") => Connection.Emit(action == "PROGRESS"
             ? $"223>>PROGRESS>>test.pkg>>App>>{status}>>{value}>>{Key}"
             : $"223>>INSTALL>>test.pkg>>App>>{status}>>{Key}", new(1));
+
+        /// <summary>用同一消息队列的哨兵动作等待此前排队的回包/下载事件全部处理完。</summary>
         public async Task Drain()
         {
             using var canceled = new CancellationTokenSource();
@@ -336,6 +304,7 @@ public sealed class ApkTransferServiceTests
             }
             finally { Service.ProgressChanged -= handler; }
         }
+
         public async ValueTask DisposeAsync()
         {
             await Service.DisposeAsync();
@@ -400,68 +369,59 @@ public sealed class ApkTransferServiceTests
 
     private sealed class FakeHttp : IApkHttpServer
     {
-        public event EventHandler<ApkAsset>? AssetDownloaded { add { } remove { } }
-        public int Port => 12345;
-        public bool Registered { get; private set; }
+        private readonly HashSet<string> _registered = new(StringComparer.Ordinal);
+        public event EventHandler<ApkAsset>? AssetDownloaded;
+        public int Port => Running ? 12345 : 0;
+        public bool Running { get; private set; }
+        public IPAddress? Address { get; private set; }
+        public int StartCount { get; private set; }
+        public int StopCount { get; private set; }
+        public int FailStops { get; set; }
         public Action? Registering { get; set; }
         public Func<CancellationToken, Task>? Starting { get; set; }
-        public Task StartAsync(IPAddress localAddress, CancellationToken cancellationToken = default) =>
-            Starting?.Invoke(cancellationToken) ?? Task.CompletedTask;
+        public bool Registered(string key)
+        {
+            lock (_registered) { return _registered.Contains(key); }
+        }
+        public void RaiseDownloaded(string key) => AssetDownloaded?.Invoke(this,
+            new ApkAsset(key, new Uri($"http://127.0.0.1:12345/apk/{key}"), 3, "snapshot.apk"));
+        public async Task StartAsync(IPAddress localAddress, CancellationToken cancellationToken = default)
+        {
+            if (Running)
+            {
+                if (!Equals(Address, localAddress)) { throw new InvalidOperationException("Stop the server before changing its address."); }
+                return;
+            }
+            if (Starting is { } starting) { await starting(cancellationToken); }
+            Running = true;
+            Address = localAddress;
+            StartCount++;
+        }
         public Task<ApkAsset> RegisterSnapshotAsync(string snapshotPath, string key, IPAddress allowedRemoteAddress,
             CancellationToken cancellationToken = default)
         {
-            Registered = true;
+            if (!Running) { throw new InvalidOperationException("Start the server before registering assets."); }
+            lock (_registered)
+            {
+                if (!_registered.Add(key)) { throw new InvalidOperationException("The key is already registered."); }
+            }
             Registering?.Invoke();
             return Task.FromResult(new ApkAsset(key, new Uri($"http://127.0.0.1:12345/apk/{key}"),
                 new FileInfo(snapshotPath).Length, snapshotPath));
         }
-        public void Unregister(string key) => Registered = false;
-        public int FailStops { get; set; }
+        public void Unregister(string key)
+        {
+            lock (_registered) { _registered.Remove(key); }
+        }
         public Task StopAsync()
         {
             if (FailStops > 0) { FailStops--; throw new IOException("stop failed"); }
-            Registered = false;
+            StopCount++;
+            Running = false;
+            Address = null;
+            lock (_registered) { _registered.Clear(); }
             return Task.CompletedTask;
         }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-    }
-
-    private sealed class ManualClock : TimeProvider
-    {
-        private readonly List<ManualTimer> _timers = [];
-        private TimeSpan _elapsed;
-        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
-        {
-            lock (_timers)
-            {
-                var timer = new ManualTimer(this, callback, state, _elapsed + dueTime);
-                _timers.Add(timer);
-                return timer;
-            }
-        }
-        public void Advance(TimeSpan amount)
-        {
-            ManualTimer[] due;
-            lock (_timers)
-            {
-                _elapsed += amount;
-                due = _timers.Where(timer => !timer.Disposed && timer.Due <= _elapsed).ToArray();
-                foreach (ManualTimer timer in due) { timer.Disposed = true; }
-            }
-            foreach (ManualTimer timer in due) { timer.Callback(timer.State); }
-        }
-        private sealed class ManualTimer(ManualClock clock, TimerCallback callback, object? state, TimeSpan due) : ITimer
-        {
-            public TimerCallback Callback { get; } = callback;
-            public object? State { get; } = state;
-            public TimeSpan Due { get; private set; } = due;
-            public bool Disposed { get; set; }
-            public bool Change(TimeSpan dueTime, TimeSpan period)
-            {
-                lock (clock._timers) { Due = clock._elapsed + dueTime; return !Disposed; }
-            }
-            public void Dispose() { lock (clock._timers) { Disposed = true; } }
-            public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
-        }
     }
 }

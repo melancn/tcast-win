@@ -18,7 +18,7 @@ public sealed record ApkAsset(string Key, Uri Url, long Bytes, string SnapshotPa
 /// 实现要点（P4）：Kestrel 绑定所选局域网 IPv4 与端口 0，启动后读实际端口；
 /// 只路由已注册 key，不接受磁盘路径；仅 GET/HEAD，非目标电视 IP 返回 403；
 /// 单段 Range 返回 206，非法/多段/不可满足返回 416，未知 key 404；
-/// 任务期间防止同路径文件被替换；成功或明确失败释放注册项，未知结果保留可配置租约。
+/// 任务期间防止同路径文件被替换；监听可跨多次发送复用，注册项在停止服务或下一次发送时注销。
 /// </remarks>
 public interface IApkHttpServer : IAsyncDisposable
 {

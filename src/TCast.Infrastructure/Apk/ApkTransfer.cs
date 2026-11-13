@@ -4,19 +4,15 @@ using TCast.Protocol.Models;
 namespace TCast.Infrastructure.Apk;
 
 /// <summary>
-/// 安装任务状态机：Idle → Validating → ParsingMetadata → Ready → Serving → CommandSent
-/// → AwaitingDownload → Downloading → Installing → Succeeded，
-/// 失败/未知分支：DownloadFailed / InstallFailed / Denied / TimedOutUnknown / ConnectionLostUnknown / LocalWaitStopped / ParseFailed。
+/// 安装任务状态机：Validating → Serving → AwaitingDownload → Downloading → Installing → Succeeded。
+/// 发送命令后不再等待电视回包：本地任务在命令写出时结束，安装结果以电视为准；
+/// 失败/结束分支：DownloadFailed / InstallFailed / Denied / Sent / ConnectionLostUnknown / LocalPreparationFailed。
 /// </summary>
 public enum ApkTransferState
 {
     Idle,
     Validating,
-    ParsingMetadata,
-    ParseFailed,
-    Ready,
     Serving,
-    CommandSent,
     AwaitingDownload,
     Downloading,
     Installing,
@@ -24,9 +20,12 @@ public enum ApkTransferState
     DownloadFailed,
     InstallFailed,
     Denied,
-    TimedOutUnknown,
+
+    /// <summary>已发送安装请求且未等待电视回包，本地任务结束。</summary>
+    Sent,
+
+    /// <summary>本地写入结果未知；命令可能已送达。</summary>
     ConnectionLostUnknown,
-    LocalWaitStopped,
     LocalPreparationFailed,
 }
 
@@ -50,34 +49,35 @@ public sealed record ApkTransferProgress(
     /// <summary>是否终态。</summary>
     public bool IsTerminal => State is ApkTransferState.Succeeded or ApkTransferState.DownloadFailed
                                    or ApkTransferState.InstallFailed or ApkTransferState.Denied
-                                   or ApkTransferState.ParseFailed or ApkTransferState.LocalPreparationFailed;
+                                   or ApkTransferState.Sent or ApkTransferState.LocalPreparationFailed;
 }
 
 /// <summary>
-/// 一个设备的安装任务编排。同一设备同时只允许一个活跃任务。
+/// 一个设备的安装任务编排。同一设备同时只允许一个正在准备的发送。
 /// </summary>
 /// <remarks>
-/// 实现要点（P4）：校验并确认解析结果 → 启动/确认 HTTP → <b>先注册回包等待</b> → 发 INSTALL
-/// → 按 session+key+package+action 匹配 → 终态释放注册项，未知结果保留租约。
-/// 本地“停止等待”不是取消电视安装，需与“停止本地文件服务”分开。
+/// 实现要点（P4）：校验并确认解析结果 → 启动或复用 HTTP 监听 → 注册资产 → 发 INSTALL。
+/// <b>发送后不等待电视回包</b>：命令写出即返回，UI 立即恢复可再次发送；
+/// 监听与资产保留到“停止本地文件服务”或下一次发送，下一次发送复用同一监听。
+/// 电视 223 回包仅作被动展示，缺包或迟到不影响本地完成。
 /// </remarks>
 public interface IApkTransferService : IAsyncDisposable
 {
     /// <summary>进度或状态变化。</summary>
     event EventHandler<ApkTransferProgress>? ProgressChanged;
 
-    /// <summary>当前是否有活跃任务。</summary>
+    /// <summary>本地是否正在准备或写安装命令。</summary>
     bool IsBusy { get; }
+
+    /// <summary>HTTP 监听与已注册资产是否仍存活。</summary>
     bool HasLease { get; }
+
     ApkTransferProgress? Current { get; }
     Uri? DownloadUrl { get; }
 
-    /// <summary>发起安装。有活跃任务时抛出。</summary>
+    /// <summary>发起安装。写出命令后即返回，不等待电视回包；准备期间再次调用会抛出。</summary>
     Task StartAsync(ApkMetadata metadata, ApkSnapshot snapshot, IPAddress localAddress, IPAddress targetAddress, CancellationToken cancellationToken = default);
 
-    /// <summary>停止本地等待（结果未知），保留租约。</summary>
-    Task StopWaitingAsync();
-
-    /// <summary>显式停止本地文件服务（可能导致电视下载失败）。</summary>
+    /// <summary>停止本地文件服务：注销资产并停止监听（可能导致电视下载失败，不取消电视安装）。</summary>
     Task StopServingAsync();
 }
